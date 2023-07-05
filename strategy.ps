@@ -1,0 +1,164 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Lzyu
+
+//@version=5
+strategy("bbk-kdj", overlay=true, default_qty_type =strategy.percent_of_equity,default_qty_value=20, initial_capital=1000)
+
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Modified by Juan C for FVBO Strategy, some source code from Trader-Elisa
+// kdj
+
+
+ilong = input(25, title="period")
+isig = input(3, title="signal")
+
+
+bcwsma(s, l, m) =>
+    _s = s
+    _l = l
+    _m = m
+    _bcwsma = 0.0  // Initialize _bcwsma before using it in the expression
+    if _l != 0
+        _bcwsma := (_m * _s + (_l - _m) * nz(_bcwsma[1])) / _l
+    _bcwsma
+
+c = close
+h = ta.highest(high, ilong)
+l = ta.lowest(low,ilong)
+RSV = 100*((c-l)/(h-l))
+pK = bcwsma(RSV, isig, 1)
+pD = bcwsma(pK, isig, 1)
+pJ = 3 * pK-2 * pD
+
+// plot(pJ, color=color.red)
+
+//-----------------------------------------
+
+//bb-k
+length = 20
+src = input(close, title="Source")
+
+// 2 Standard Deviation Bollinger Bands
+
+B2mult = 2
+B2basis = ta.sma(src, length)
+B2dev = B2mult * ta.stdev(src, length)
+B2upper = B2basis + B2dev
+B2lower = B2basis - B2dev
+
+
+// plot(B2basis, color=#9c27b0, style=plot.style_cross, linewidth=2)
+p1 = plot(B2upper, color=#673ab7, linewidth=2, title="Band 2SD upper", style=plot.style_line)
+p2 = plot(B2lower, color=#673ab7, linewidth=2, title="Band 2SD lower", style=plot.style_line)
+
+
+
+// 1.5 Keltner channels
+useTrueRange = input(true)
+
+Kmult = input(1.5, title="Keltner Range")
+Kma = ta.ema(src, length)
+Krange = useTrueRange ? ta.tr : high - low
+Krangema = ta.ema(Krange, length)
+Kupper = Kma + Krangema * Kmult
+Klower = Kma - Krangema * Kmult
+
+// p5 = plot(Kupper, title="Keltner upper", color=#2196f3, linewidth=1, style=plot.style_line)
+// p6 = plot(Klower, title="Keltner lower", color=#2196f3, linewidth=1, style=plot.style_line)
+// fill(p5, p6, color=#2196f3, title = "Keltner Channel Fill")
+
+
+// Highlight Crossover (Squeeze) //
+
+bb_condition = "Both"
+
+// label 出 squeeze範圍內 符合的k棒
+if high > B2upper and pJ >=80 and close > open and(B2upper <= Kupper and B2lower >= Klower)
+    label.new(bar_index,high,style=label.style_label_down, color=color.rgb(236, 59, 59, 20), textcolor=color.white,yloc = yloc.abovebar,size = size.tiny)
+
+if low < B2lower and pJ <=20 and close < open and(B2upper <= Kupper and B2lower >= Klower)
+    label.new(bar_index,low,style=label.style_label_up, color=color.rgb(77, 240, 68, 20), textcolor=color.white,yloc = yloc.belowbar,size = size.tiny)
+
+
+bar_cnt = false
+bg_bar_cnt = false
+cross_over_color = B2upper <= Kupper and B2lower >= Klower ? color.aqua : na
+
+
+//在squeeze範圍的第一根 k
+if (B2upper <= Kupper and B2lower >= Klower)and not(B2upper[1] <= Kupper[1] and B2lower[1] >= Klower[1])
+    bar_cnt := true
+
+//在squeeze範圍結束後的第一根 k
+if not (B2upper <= Kupper and B2lower >= Klower) and (B2upper[1] <= Kupper[1] and B2lower[1] >= Klower[1]) 
+    bg_bar_cnt := true
+    
+
+cnt = ta.barssince(bar_cnt==true) //在squeeze範圍的第一根 k
+
+if cnt == 0
+    bg_bar_cnt := true
+
+bg_cnt = ta.barssince(bg_bar_cnt==true) //在squeeze範圍結束後的第一根 k
+
+plot(bg_cnt,color = color.red)
+bbk_sell = false
+bbk_buy = false
+
+// 查詢 出現squeeze範圍內，有沒有符合收盤價 高/低於 bband 且 kdj 小/大於 20/80
+// 如果 cnt == bg_cnt 則從0開始算(還在squeeze範圍內)，如果不等於 代表不在範圍內
+cnt_init = (cnt == bg_cnt) ? 0 : bg_cnt+1
+    
+for i = cnt_init to cnt
+    if high[i] > B2upper[i] and pJ[i] >=80 and close[i] > open[i] 
+        bbk_sell := true    //squeeze範圍內，有符合條件的k棒
+    if low[i] < B2lower[i] and pJ[i] <=20 and close[i] < open[i] 
+        bbk_buy := true     //squeeze範圍內，有符合條件的k棒
+
+
+//找之後的關鍵k棒符合 KDJ < 80 / KDJ > 20
+//如果前面的區間有label，則動作
+
+have_sell = false
+have_buy = false
+for i = 1 to cnt
+    if pJ[i] <= 80 and bbk_sell[i] and close[i] < open[i] 
+        have_sell := true    //squeeze範圍內，有符合條件的k棒
+    if pJ[i] >= 20 and bbk_buy[i] and close[i] > open[i] 
+        have_buy := true     //squeeze範圍內，有符合條件的k棒
+
+
+
+// 設定槓桿大小
+setLeverage = input.int(defval = 10, title = 'Position Leverage', minval = 1, maxval = 125, step = 1, group = 'Risk settings')
+max_acceptedLoss = input.float(defval = 10, title = 'Maximum Accepted Loss %', minval = 0, maxval = 100, step = 1, group = 'Risk settings', tooltip="Maximum acepted loss per trade, actual SL can be lower due to selected StopLoss system. Also used as the simple SL level") / 100 / setLeverage
+amount_per_trade = input.int(10,title='Equity % per trade',minval = 1, maxval = 100 ,step = 1, group = 'Risk settings', tooltip = "This overwrites the default TV property") / 100
+leveraged_size = strategy.equity * setLeverage  / close * amount_per_trade
+
+
+
+
+//我認為可以改的地方，止損設置方式，止損大小等
+stop_high = ta.highest(5)
+if  pJ <= 80 and bbk_sell and close < open and not have_sell 
+    strategy.entry("S", strategy.short, qty = leveraged_size)
+    strategy.exit("exit","S", stop = stop_high)
+    // label.new(bar_index,high,"sell",style=label.style_label_down, color=color.rgb(236, 59, 59, 20), textcolor=color.white,yloc = yloc.abovebar,size = size.tiny)
+
+stop_low = ta.lowest(5)
+if  pJ >= 20 and bbk_buy and close > open and not have_buy
+    strategy.entry("B", strategy.long, qty=leveraged_size) 
+    strategy.exit("exit","B", stop = stop_low)
+    // label.new(bar_index,low,"buy",style=label.style_label_up, color=color.rgb(77, 240, 68, 20), textcolor=color.white,yloc = yloc.belowbar,size = size.tiny)
+
+plot(ta.lowest(5),color=color.green)
+plot(ta.highest(5),color=color.green)
+
+// 從 20以下 升到 20 以上 關掉空單
+if(pJ > 20  and pJ[1]<=20)
+    strategy.close("S") 
+// 從 80以上 降到 80 以下 關掉多單    
+if(pJ < 80  and pJ[1]>=80)
+    strategy.close("B")
+
+bgcolor(color = color.new(cross_over_color, transp = 80), title = "Cross Over Identification Color")
